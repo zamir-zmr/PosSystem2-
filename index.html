@@ -1078,206 +1078,252 @@ function processPastedJson() {
     function buildReceiptHTML(data) {
         const { logo, billLine, dateStr, timeStr, shiftText, custPhone, items, discPerc, discAmt, vat, delivery, grand, itemsCount, totalQty } = data;
 
-        // Extract bill number and ticket number from billLine
         const billNoMatch = billLine.match(/Bill no:\s*(\d+)/i);
         const ticketMatch = billLine.match(/Ticket no:\s*(\S+)/i);
-        const billNo = billNoMatch ? billNoMatch[1] : '';
+        const billNo = billNoMatch ? billNoMatch[1] : '1';
         const ticketNo = ticketMatch ? ticketMatch[1] : '';
 
-        // Subtotal before discount
         const subTotal = items.reduce((s, it) => s + Number(it.price) * Number(it.qty), 0);
+        const subAfterDisc = subTotal - discAmt;
+        // amtExclVat = grand before VAT added  = grand - vat
         const amtExclVat = grand - vat;
+
+        // ── barcode data string (invoice number digits)
+        const receiptNo = String(billNo).padStart(12, '0');
+        // Code128 barcode SVG generator (pure JS, no lib needed)
+        function code128Svg(text) {
+            // Encode as Code-C (pairs of digits) or Code-B for mixed
+            const START_B = 104, STOP = 106, CODE_C = 99;
+            const tableB = ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~';
+            // Use Code-B throughout for simplicity
+            let vals = [START_B];
+            for (let i = 0; i < text.length; i++) {
+                const idx = tableB.indexOf(text[i]);
+                vals.push(idx < 0 ? 0 : idx);
+            }
+            // checksum
+            let check = START_B;
+            for (let i = 1; i < vals.length; i++) check += vals[i] * i;
+            vals.push(check % 103);
+            vals.push(STOP);
+            // Code128 bar widths pattern table (11 bars each symbol + 2 for stop)
+            const patterns = [
+                '11011001100','11001101100','11001100110','10010011000','10010001100',
+                '10001001100','10011001000','10011000100','10001100100','11001001000',
+                '11001000100','11000100100','10110011100','10011011100','10011001110',
+                '10111001100','10011101100','10011100110','11001110010','11001011100',
+                '11001001110','11011100100','11001110100','11101101110','11101001100',
+                '11100101100','11100100110','11101100100','11100110100','11100110010',
+                '11011011000','11011000110','11000110110','10100011000','10001011000',
+                '10001000110','10110001000','10001101000','10001100010','11010001000',
+                '11000101000','11000100010','10110111000','10110001110','10001101110',
+                '10111011000','10111000110','10001110110','11101110110','11010001110',
+                '11000101110','11011101000','11011100010','11011101110','11101011000',
+                '11101000110','11100010110','11101101000','11101100010','11100011010',
+                '11101111010','11001000010','11110001010','10100110000','10100001100',
+                '10010110000','10010000110','10000101100','10000100110','10110010000',
+                '10110000100','10011010000','10011000010','10000110100','10000110010',
+                '11000010010','11001010000','11110111010','11000010100','10001111010',
+                '10100111100','10010111100','10010011110','10111100100','10011110100',
+                '10011110010','11110100100','11110010100','11110010010','11011011110',
+                '11011110110','11110110110','10101111000','10100011110','10001011110',
+                '10111101000','10111100010','11110101000','11110100010','10111011110',
+                '10111101110','11101011110','11110101110','11010000100','11010010000',
+                '11010011100','1100011101011'  // STOP pattern
+            ];
+            let bars = '';
+            let x = 0;
+            const H = 40, W_UNIT = 1.4;
+            vals.forEach((v, vi) => {
+                const pat = patterns[Math.min(v, patterns.length - 1)] || patterns[0];
+                for (let b = 0; b < pat.length; b++) {
+                    const w = parseInt(pat[b]) * W_UNIT;
+                    if (b % 2 === 0) bars += `<rect x="${x.toFixed(2)}" y="0" width="${w.toFixed(2)}" height="${H}" fill="#000"/>`;
+                    x += w;
+                }
+            });
+            const totalW = x;
+            return `<svg xmlns="http://www.w3.org/2000/svg" width="${totalW.toFixed(2)}" height="${H}" viewBox="0 0 ${totalW.toFixed(2)} ${H}" style="display:block;margin:0 auto;">${bars}</svg>`;
+        }
 
         let itemsHtml = items.map(it => {
             const lineAmt = (Number(it.price) * Number(it.qty)).toFixed(3);
-            return `
-            <div class="item-row">
-                <span class="col-qty-left">${it.qty}x</span>
-                <span class="col-item">${escReceiptHtml(it.name)}</span>
-                <span class="col-amount">${lineAmt}</span>
-            </div>`;
+            const unitPrice = Number(it.price).toFixed(3);
+            return `<div class="irow"><span class="iqty">${it.qty}x</span><span class="iname">${escReceiptHtml(it.name)}</span><span class="iamt">${lineAmt}</span></div>`;
         }).join('');
 
-        let discHtml = discAmt > 0 ? `
-            <div class="summary-row"><span>Discount (${discPerc}%)</span><span>-${discAmt.toFixed(3)}</span></div>` : '';
-        let dlvHtml = delivery > 0 ? `
-            <div class="summary-row"><span>Delivery Charges</span><span>${delivery.toFixed(3)}</span></div>` : '';
-        let custHtml = custPhone ? `
-            <div class="info-row"><span>CUSTOMER</span><span>${escReceiptHtml(custPhone)}</span></div>` : '';
+        let discHtml = discAmt > 0
+            ? `<div class="srow"><span>Discount (${discPerc}%)</span><span>-${discAmt.toFixed(3)}</span></div>` : '';
+        let dlvHtml = delivery > 0
+            ? `<div class="srow"><span>Delivery</span><span>${delivery.toFixed(3)}</span></div>` : '';
+        let custHtml = custPhone
+            ? `<div class="srow"><span>Customer</span><span>${escReceiptHtml(custPhone)}</span></div>` : '';
         let logoHtml = logo
             ? `<img class="logo-img" src="${logo}" onerror="this.style.display='none'">`
-            : `<div class="logo-text-fallback">ASH BAKES</div>`;
+            : `<div class="logo-fallback">ASH BAKES</div>`;
 
-        // Receipt number padded like HyperMax style
-        const receiptNo = String(billNo).padStart(12, '0');
+        const barcodeSvg = code128Svg(receiptNo);
 
         return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <style>
-* { margin:0; padding:0; box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
-html, body { background:#fff; }
-body { font-family: 'Courier New', Courier, monospace; font-size:8.5pt; color:#000; display:flex; justify-content:center; align-items:flex-start; }
-.receipt { width:80mm; max-width:80mm; padding:4mm 4mm 10mm; }
+*{margin:0;padding:0;box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+html,body{background:#fff;}
+body{
+  font-family:'Courier New',Courier,monospace;
+  font-size:7.8pt;
+  line-height:1.25;
+  color:#000;
+  display:flex;justify-content:center;align-items:flex-start;
+}
+.rcpt{width:72mm;max-width:72mm;padding:3mm 3mm 8mm;}
 
-/* ── LOGO ── */
-.logo-img { display:block; width:62mm; height:auto; max-height:22mm; object-fit:contain; margin:0 auto 2.5mm; }
-.logo-text-fallback { font-size:16pt; font-weight:900; text-align:center; letter-spacing:1px; margin-bottom:2mm; }
+/* LOGO */
+.logo-img{display:block;width:64mm;height:auto;max-height:20mm;object-fit:contain;margin:0 auto 2mm;}
+.logo-fallback{font-size:14pt;font-weight:900;text-align:center;letter-spacing:1px;margin-bottom:2mm;}
 
-/* ── STORE INFO ── */
-.store-name { font-size:8pt; font-weight:700; text-align:left; line-height:1.4; margin-bottom:0.5mm; }
-.store-addr { font-size:7.5pt; text-align:left; line-height:1.35; }
-.store-vatin { font-size:7.5pt; font-weight:700; text-align:left; margin-top:0.5mm; }
-.store-inquiry { font-size:7.5pt; font-weight:700; text-align:left; }
+/* STORE INFO — left-aligned, tight */
+.sinfo{font-size:7.5pt;line-height:1.3;}
+.sinfo b{display:block;font-size:8pt;}
 
-/* ── DIVIDERS ── */
-.dashed { border-top:0.3mm dashed #000; margin:2mm 0; }
-.solid  { border-top:0.5mm solid  #000; margin:2mm 0; }
+/* DIVIDERS */
+.d{border-top:0.35mm dashed #000;margin:1.6mm 0;}
+.s{border-top:0.6mm solid #000;margin:1.6mm 0;}
 
-/* ── CENTERED LABEL (Simplified Tax Invoice) ── */
-.center-ar  { text-align:center; font-size:9pt; font-weight:700; line-height:1.5; }
-.center-en  { text-align:center; font-size:9pt; font-weight:700; letter-spacing:0.5px; }
+/* INVOICE TYPE */
+.car{text-align:center;font-size:8.5pt;font-weight:700;direction:rtl;unicode-bidi:bidi-override;}
+.cen{text-align:center;font-size:8.5pt;font-weight:700;letter-spacing:0.8px;}
 
-/* ── RECEIPT / BILL NUMBER ── */
-.receipt-no { font-size:9pt; font-weight:700; margin:1.5mm 0 0.5mm; letter-spacing:0.3px; }
+/* RECEIPT NO */
+.rno{font-size:9pt;font-weight:700;letter-spacing:0.3px;margin:1.2mm 0 0.4mm;}
+.tkt{text-align:center;font-size:8pt;font-weight:700;margin-bottom:1mm;}
 
-/* ── INFO ROWS (2-col key/value) ── */
-.info-row { display:flex; justify-content:space-between; font-size:8pt; margin:0.6mm 0; }
-.info-row .label { font-weight:700; }
+/* ITEMS */
+.thead{display:flex;justify-content:space-between;font-size:7.8pt;font-weight:700;margin:1mm 0;}
+.irow{display:flex;font-size:7.8pt;margin:0.55mm 0;align-items:flex-start;}
+.iqty{width:5.5mm;flex-shrink:0;font-weight:700;}
+.iname{flex:1;padding:0 0.8mm;word-break:break-word;}
+.iamt{width:16mm;text-align:right;flex-shrink:0;}
 
-/* ── ITEMS TABLE ── */
-.tblhead { display:flex; justify-content:space-between; font-size:8pt; font-weight:700; margin:1mm 0; }
-.item-row { display:flex; font-size:8pt; margin:0.8mm 0; align-items:flex-start; }
-.col-qty-left { width:6mm; flex-shrink:0; }
-.col-item { flex:1; padding:0 1mm; word-break:break-word; }
-.col-amount { width:18mm; text-align:right; flex-shrink:0; }
+/* SUMMARY */
+.srow{display:flex;justify-content:space-between;font-size:7.8pt;margin:0.55mm 0;}
+.tot-row{display:flex;font-size:8pt;font-weight:700;margin:0.6mm 0;}
+.tot-row .tl{width:14mm;}
+.tot-row .tm{flex:1;text-align:center;}
+.tot-row .tr{width:16mm;text-align:right;}
 
-/* ── SUMMARY ROWS ── */
-.summary-row { display:flex; justify-content:space-between; font-size:8.5pt; margin:0.7mm 0; }
-.summary-row.bold { font-weight:700; font-size:9pt; }
+/* GRAND TOTAL */
+.grand{display:flex;justify-content:space-between;font-size:10.5pt;font-weight:900;margin:1.2mm 0;}
 
-/* ── GRAND TOTAL ── */
-.grand-total-row { display:flex; justify-content:space-between; font-size:11pt; font-weight:900; margin:1.5mm 0; }
+/* PAYMENT */
+.prow{display:flex;justify-content:space-between;font-size:7.8pt;margin:0.55mm 0;}
 
-/* ── PAYMENT ROWS ── */
-.pay-row { display:flex; justify-content:space-between; font-size:8.5pt; margin:0.6mm 0; }
+/* VAT SECTION — 3-col table matching HyperMax exactly */
+/* Col order: VAT% | AMOUNT(excl VAT) | VAT AMOUNT */
+.vat-wrap{font-size:7.2pt;margin:0.5mm 0;}
+.vrow{display:grid;grid-template-columns:12mm 1fr 16mm;margin:0.4mm 0;}
+.vrow span:nth-child(2){text-align:center;}
+.vrow span:nth-child(3){text-align:right;}
+.vrow.ar{direction:rtl;unicode-bidi:bidi-override;font-size:7pt;}
+.vrow.ar span{direction:rtl;}
+.vdat{display:grid;grid-template-columns:12mm 1fr 16mm;font-size:7.8pt;margin:0.4mm 0;}
+.vdat span:nth-child(2){text-align:center;}
+.vdat span:nth-child(3){text-align:right;}
 
-/* ── VAT TABLE ── */
-.vat-table { width:100%; border-collapse:collapse; margin:1mm 0; }
-.vat-table th, .vat-table td { font-size:7.5pt; padding:0.5mm 1mm; text-align:left; }
-.vat-table th { font-weight:700; }
-.vat-table td:last-child, .vat-table th:last-child { text-align:right; }
-.vat-table td:nth-child(2), .vat-table th:nth-child(2) { text-align:right; }
+/* FOOT */
+.frow{display:flex;justify-content:space-between;font-size:7.5pt;margin:0.5mm 0;}
+.fcen{text-align:center;font-size:7.5pt;margin:0.7mm 0;}
+.fbold{font-weight:700;}
 
-/* ── FOOTER INFO ROWS ── */
-.foot-row { display:flex; justify-content:space-between; font-size:8pt; margin:0.6mm 0; }
-.foot-center { text-align:center; font-size:7.5pt; margin:0.8mm 0; }
-.foot-bold { font-weight:700; }
+/* BARCODE */
+.barcode-wrap{text-align:center;margin:2mm 0 0.5mm;}
+.barcode-num{text-align:center;font-size:7pt;letter-spacing:1px;margin-top:0.5mm;}
 
-@media print {
-  @page { size:80mm auto; margin:0; }
-  body { display:flex; justify-content:center; align-items:flex-start; }
-  .receipt { width:80mm; }
+@media print{
+  @page{size:80mm auto;margin:0;}
+  body{display:flex;justify-content:center;align-items:flex-start;}
+  .rcpt{width:72mm;}
 }
 </style></head>
 <body>
-<div class="receipt">
+<div class="rcpt">
 
-  <!-- LOGO -->
-  ${logoHtml}
+${logoHtml}
 
-  <!-- STORE INFO -->
-  <div class="store-name">ASH BAKES - AL SEEB</div>
-  <div class="store-addr">SULTANATE OF OMAN, MUSCAT, AL SEEB</div>
-  <div class="store-vatin">VATIN: OM0000000000</div>
-  <div class="store-inquiry">FOR INQUIRIES CALL 97060084</div>
+<div class="sinfo">
+  <b>ASH BAKES - AL SEEB</b>
+  SULTANATE OF OMAN, MUSCAT, AL SEEB<br>
+  VATIN: OM0000000000<br>
+  FOR INQUIRIES CALL 97060084
+</div>
 
-  <div class="dashed"></div>
+<div class="d"></div>
+<div class="car">فاتورة ضريبية مبسطة</div>
+<div class="cen">SIMPLIFIED TAX INVOICE</div>
+<div class="d"></div>
 
-  <!-- INVOICE TYPE (bilingual) -->
-  <div class="center-ar">فاتورة ضريبية مبسطة</div>
-  <div class="center-en">SIMPLIFIED TAX INVOICE</div>
+<div class="rno">${receiptNo}</div>
+${ticketNo ? `<div class="tkt">TICKET NO : ${ticketNo}</div>` : ''}
 
-  <div class="dashed"></div>
+<div class="thead"><span>ITEM</span><span>OMR</span></div>
+<div class="d"></div>
+${itemsHtml}
+<div class="d"></div>
 
-  <!-- RECEIPT NUMBER -->
-  <div class="receipt-no">${receiptNo}</div>
-  ${ticketNo ? `<div class="center-en" style="font-size:8pt; font-weight:700; margin-bottom:1mm;">TICKET NO : ${ticketNo}</div>` : ''}
+${discHtml}
+${dlvHtml}
+<div class="tot-row">
+  <span class="tl">OMR*</span>
+  <span class="tm">TOT</span>
+  <span class="tr">${subAfterDisc.toFixed(3)}</span>
+</div>
 
-  <!-- ITEMS -->
-  <div class="tblhead">
-    <span>ITEM</span>
-    <span style="margin-left:auto">OMR</span>
-  </div>
-  <div class="dashed"></div>
-  ${itemsHtml}
-  <div class="dashed"></div>
+<div class="s"></div>
+<div class="grand"><span>GRAND TOTAL</span><span>${grand.toFixed(3)}</span></div>
+<div class="s"></div>
 
-  <!-- SUBTOTAL / DISCOUNT / DELIVERY -->
-  ${discHtml}
-  ${dlvHtml}
-  <div class="summary-row bold">
-    <span>OMR*</span><span>TOT</span><span>${(subTotal - discAmt).toFixed(3)}</span>
-  </div>
+<div class="prow"><span>OMR</span><span>Cash</span><span>${grand.toFixed(3)}</span></div>
+${custHtml}
 
-  <!-- GRAND TOTAL -->
-  <div class="solid"></div>
-  <div class="grand-total-row">
-    <span>GRAND TOTAL</span>
-    <span>${grand.toFixed(3)}</span>
-  </div>
-  <div class="solid"></div>
+<div class="d"></div>
 
-  <!-- PAYMENT -->
-  <div class="pay-row"><span>OMR</span><span>Cash</span><span>${grand.toFixed(3)}</span></div>
+<!-- VAT — Col order: VAT% | AMOUNT(excl VAT) | VAT AMOUNT (matches HyperMax target) -->
+<div class="vat-wrap">
+  <div class="vrow ar"><span>نسبة م ق م</span><span>المبلغ (قبل م ق م)</span><span>قيمة م ق م</span></div>
+  <div class="vrow fbold"><span>VAT%</span><span>AMOUNT(excl VAT)</span><span>VAT AMOUNT</span></div>
+  <div class="d"></div>
+  <div class="vdat"><span>5%</span><span>${amtExclVat.toFixed(3)}</span><span>${vat.toFixed(3)}</span></div>
+</div>
 
-  ${custHtml}
+<div class="d"></div>
 
-  <div class="dashed"></div>
+<div class="frow"><span class="fbold">SERVED BY : ${escReceiptHtml(shiftText)}</span></div>
+<div class="frow">
+  <span style="direction:rtl">مجموع البضاعة</span>
+  <span>TOTAL ITEMS&nbsp;&nbsp;${itemsCount}</span>
+</div>
+<div class="frow">
+  <span style="direction:rtl">التاريخ</span>
+  <span>DATE : ${dateStr}&nbsp;&nbsp;TIME : ${timeStr}</span>
+</div>
+<div class="frow">
+  <span style="direction:rtl">رقم الفاتورة الضريبية</span>
+  <span>INVOICE NO : ${receiptNo}</span>
+</div>
 
-  <!-- VAT TABLE (bilingual header like HyperMax) -->
-  <div class="info-row" style="font-size:7.5pt; font-weight:700;">
-    <span>قيمة م ق م</span>
-    <span>المبلغ (قبل م ق م)</span>
-    <span>نسبة م ق م</span>
-  </div>
-  <div class="info-row" style="font-size:7.5pt; font-weight:700;">
-    <span>VAT AMOUNT</span>
-    <span>AMOUNT(excl VAT)</span>
-    <span>VAT%</span>
-  </div>
-  <div class="dashed"></div>
-  <div class="info-row" style="font-size:8pt;">
-    <span>${vat.toFixed(3)}</span>
-    <span>${amtExclVat.toFixed(3)}</span>
-    <span>5%</span>
-  </div>
-  <div class="dashed"></div>
+<!-- BARCODE -->
+<div class="barcode-wrap">${barcodeSvg}</div>
+<div class="barcode-num">${receiptNo}</div>
 
-  <!-- SERVED BY / TOTALS / DATE -->
-  <div class="foot-row"><span class="foot-bold">SERVED BY : ${escReceiptHtml(shiftText)}</span></div>
-  <div class="foot-row">
-    <span>مجموع البضاعة</span>
-    <span>TOTAL ITEMS&nbsp;&nbsp;${itemsCount}</span>
-  </div>
-  <div class="foot-row">
-    <span style="direction:rtl">التاريخ</span>
-    <span>DATE : ${dateStr}&nbsp;&nbsp;TIME : ${timeStr}</span>
-  </div>
-  <div class="foot-row">
-    <span style="direction:rtl">رقم الفاتورة الضريبية</span>
-    <span>INVOICE NO : ${receiptNo}</span>
-  </div>
+<div class="d"></div>
 
-  <div class="dashed"></div>
-
-  <!-- FOOTER POLICY (bilingual like HyperMax) -->
-  <div class="foot-center" style="direction:rtl; font-size:7.5pt;">5 أيوما للاسترجاع المبلغ</div>
-  <div class="foot-center" style="direction:rtl; font-size:7.5pt;">أو التبديل بناء على الموافقة</div>
-  <div class="foot-center" style="direction:rtl; font-size:7.5pt;">شكرا لضيوفكم</div>
-  <div class="foot-center foot-bold">15 DAYS EXCHANGE / REFUND UPON APPROVAL</div>
-  <div class="foot-center foot-bold">** THANK YOU &amp; COME AGAIN **</div>
-  <div class="dashed"></div>
-  <div class="foot-center" style="font-size:7pt;">Generated by ASH BAKES POS System</div>
+<div class="fcen" style="direction:rtl;">5 أيوما للاسترجاع المبلغ</div>
+<div class="fcen" style="direction:rtl;">أو التبديل بناء على الموافقة</div>
+<div class="fcen" style="direction:rtl;">شكرا لضيوفكم</div>
+<div class="fcen fbold">15 DAYS EXCHANGE / REFUND UPON APPROVAL</div>
+<div class="fcen fbold">** THANK YOU &amp; COME AGAIN **</div>
+<div class="d"></div>
+<div class="fcen" style="font-size:6.8pt;">Generated by ASH BAKES POS System</div>
 
 </div>
 </body></html>`;
